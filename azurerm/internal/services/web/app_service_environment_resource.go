@@ -64,6 +64,24 @@ func resourceArmAppServiceEnvironment() *schema.Resource {
 				ValidateFunc: networkValidate.SubnetID,
 			},
 
+			"cluster_setting": {
+				Type: schema.TypeList,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"name": {
+							Type:         schema.TypeString,
+							Required:     true,
+							ValidateFunc: validation.StringIsNotEmpty,
+						},
+
+						"value": {
+							Type:     schema.TypeString,
+							Required: true,
+						},
+					},
+				},
+			},
+
 			"internal_load_balancing_mode": {
 				Type:     schema.TypeString,
 				Optional: true,
@@ -168,7 +186,7 @@ func resourceArmAppServiceEnvironmentCreate(d *schema.ResourceData, meta interfa
 
 	vnet, err := networksClient.Get(ctx, subnet.ResourceGroup, subnet.VirtualNetworkName, "")
 	if err != nil {
-		return fmt.Errorf("Error retrieving Virtual Network %q (Resource Group %q): %+v", subnet.VirtualNetworkName, subnet.ResourceGroup, err)
+		return fmt.Errorf("retrieving Virtual Network %q (Resource Group %q): %+v", subnet.VirtualNetworkName, subnet.ResourceGroup, err)
 	}
 
 	// the App Service Environment has to be in the same location as the Virtual Network
@@ -176,13 +194,13 @@ func resourceArmAppServiceEnvironmentCreate(d *schema.ResourceData, meta interfa
 	if loc := vnet.Location; loc != nil {
 		location = azure.NormalizeLocation(*loc)
 	} else {
-		return fmt.Errorf("Error determining Location from Virtual Network %q (Resource Group %q): `location` was nil", subnet.VirtualNetworkName, subnet.ResourceGroup)
+		return fmt.Errorf("determining Location from Virtual Network %q (Resource Group %q): `location` was nil", subnet.VirtualNetworkName, subnet.ResourceGroup)
 	}
 
 	existing, err := client.Get(ctx, resourceGroup, name)
 	if err != nil {
 		if !utils.ResponseWasNotFound(existing.Response) {
-			return fmt.Errorf("Error checking for presence of existing App Service Environment %q (Resource Group %q): %s", name, resourceGroup, err)
+			return fmt.Errorf("checking for presence of existing App Service Environment %q (Resource Group %q): %s", name, resourceGroup, err)
 		}
 	}
 
@@ -215,9 +233,13 @@ func resourceArmAppServiceEnvironmentCreate(d *schema.ResourceData, meta interfa
 		Tags: tags.Expand(t),
 	}
 
+	if clusterSettingsRaw, ok := d.GetOk("cluster_setting"); ok {
+		envelope.AppServiceEnvironment.ClusterSettings = expandAppServiceEnvironmentClusterSettings(clusterSettingsRaw)
+	}
+
 	// whilst this returns a future go-autorest has a max number of retries
 	if _, err := client.CreateOrUpdate(ctx, resourceGroup, name, envelope); err != nil {
-		return fmt.Errorf("Error creating App Service Environment %q (Resource Group %q): %+v", name, resourceGroup, err)
+		return fmt.Errorf("creating App Service Environment %q (Resource Group %q): %+v", name, resourceGroup, err)
 	}
 
 	createWait := resource.StateChangeConf{
@@ -239,7 +261,7 @@ func resourceArmAppServiceEnvironmentCreate(d *schema.ResourceData, meta interfa
 
 	read, err := client.Get(ctx, resourceGroup, name)
 	if err != nil {
-		return fmt.Errorf("Error retrieving App Service Environment %q (Resource Group %q): %+v", name, resourceGroup, err)
+		return fmt.Errorf("retrieving App Service Environment %q (Resource Group %q): %+v", name, resourceGroup, err)
 	}
 
 	d.SetId(*read.ID)
@@ -285,8 +307,12 @@ func resourceArmAppServiceEnvironmentUpdate(d *schema.ResourceData, meta interfa
 		}
 	}
 
+	if d.HasChange("cluster_setting") {
+		e.ClusterSettings = expandAppServiceEnvironmentClusterSettings(d.Get("cluster_setting"))
+	}
+
 	if _, err := client.Update(ctx, id.ResourceGroup, id.HostingEnvironmentName, e); err != nil {
-		return fmt.Errorf("Error updating App Service Environment %q (Resource Group %q): %+v", id.HostingEnvironmentName, id.ResourceGroup, err)
+		return fmt.Errorf("updating App Service Environment %q (Resource Group %q): %+v", id.HostingEnvironmentName, id.ResourceGroup, err)
 	}
 
 	updateWait := resource.StateChangeConf{
@@ -302,7 +328,7 @@ func resourceArmAppServiceEnvironmentUpdate(d *schema.ResourceData, meta interfa
 	}
 
 	if _, err := updateWait.WaitForState(); err != nil {
-		return fmt.Errorf("Error waiting for Update of App Service Environment %q (Resource Group %q): %+v", id.HostingEnvironmentName, id.ResourceGroup, err)
+		return fmt.Errorf("waiting for Update of App Service Environment %q (Resource Group %q): %+v", id.HostingEnvironmentName, id.ResourceGroup, err)
 	}
 
 	return resourceArmAppServiceEnvironmentRead(d, meta)
@@ -325,7 +351,7 @@ func resourceArmAppServiceEnvironmentRead(d *schema.ResourceData, meta interface
 			d.SetId("")
 			return nil
 		}
-		return fmt.Errorf("Error retrieving App Service Environmment %q (Resource Group %q): %+v", id.HostingEnvironmentName, id.ResourceGroup, err)
+		return fmt.Errorf("retrieving App Service Environmment %q (Resource Group %q): %+v", id.HostingEnvironmentName, id.ResourceGroup, err)
 	}
 
 	d.Set("name", id.HostingEnvironmentName)
@@ -357,6 +383,7 @@ func resourceArmAppServiceEnvironmentRead(d *schema.ResourceData, meta interface
 		d.Set("pricing_tier", pricingTier)
 		d.Set("user_whitelisted_ip_ranges", props.UserWhitelistedIPRanges)
 		d.Set("allowed_user_ip_cidrs", props.UserWhitelistedIPRanges)
+		d.Set("cluster_setting", flattenClusterSettings(props.ClusterSettings))
 	}
 
 	return tags.FlattenAndSet(d, existing.Tags)
@@ -382,7 +409,7 @@ func resourceArmAppServiceEnvironmentDelete(d *schema.ResourceData, meta interfa
 			return nil
 		}
 
-		return fmt.Errorf("Error deleting App Service Environment %q (Resource Group %q): %+v", id.HostingEnvironmentName, id.ResourceGroup, err)
+		return fmt.Errorf("deleting App Service Environment %q (Resource Group %q): %+v", id.HostingEnvironmentName, id.ResourceGroup, err)
 	}
 
 	err = future.WaitForCompletionRef(ctx, client.Client)
@@ -391,7 +418,7 @@ func resourceArmAppServiceEnvironmentDelete(d *schema.ResourceData, meta interfa
 			return nil
 		}
 
-		return fmt.Errorf("Error waiting for deletion of App Service Environment %q (Resource Group %q): %+v", id.HostingEnvironmentName, id.ResourceGroup, err)
+		return fmt.Errorf("waiting for deletion of App Service Environment %q (Resource Group %q): %+v", id.HostingEnvironmentName, id.ResourceGroup, err)
 	}
 
 	return nil
@@ -441,4 +468,43 @@ func convertToIsolatedSKU(vmSKU string) (isolated string) {
 
 func loadBalancingModeDiffSuppress(k, old, new string, d *schema.ResourceData) bool {
 	return strings.ReplaceAll(old, " ", "") == strings.ReplaceAll(new, " ", "")
+}
+
+func expandAppServiceEnvironmentClusterSettings(input interface{}) *[]web.NameValuePair {
+	var clusterSettings []web.NameValuePair
+	if input == nil {
+		return &clusterSettings
+	}
+
+	clusterSettingsRaw := input.([]map[string]interface{})
+	for _, v := range clusterSettingsRaw {
+		clusterSettings = append(clusterSettings, web.NameValuePair{
+			Name:  utils.String(v["name"].(string)),
+			Value: utils.String(v["value"].(string)),
+		})
+	}
+	return &clusterSettings
+}
+
+func flattenClusterSettings(input *[]web.NameValuePair) interface{} {
+	if input == nil {
+		return []map[string]interface{}{}
+	}
+
+	settings := make([]map[string]interface{}, len(*input))
+	for _, v := range *input {
+		name := ""
+		if v.Name != nil {
+			name = *v.Name
+		}
+		value := ""
+		if v.Value != nil {
+			value = *v.Value
+		}
+		settings = append(settings, map[string]interface{}{
+			"name":  name,
+			"value": value,
+		})
+	}
+	return settings
 }
