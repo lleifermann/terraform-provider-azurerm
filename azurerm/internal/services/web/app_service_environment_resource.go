@@ -478,11 +478,12 @@ func expandAppServiceEnvironmentClusterSettings(input interface{}) *[]web.NameVa
 		return &clusterSettings
 	}
 
-	clusterSettingsRaw := input.([]map[string]interface{})
+	clusterSettingsRaw := input.([]interface{})
 	for _, v := range clusterSettingsRaw {
+		setting := v.(map[string]interface{})
 		clusterSettings = append(clusterSettings, web.NameValuePair{
-			Name:  utils.String(v["name"].(string)),
-			Value: utils.String(v["value"].(string)),
+			Name:  utils.String(setting["name"].(string)),
+			Value: utils.String(setting["value"].(string)),
 		})
 	}
 	return &clusterSettings
