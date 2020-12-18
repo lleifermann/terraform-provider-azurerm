@@ -65,7 +65,9 @@ func resourceArmAppServiceEnvironment() *schema.Resource {
 			},
 
 			"cluster_setting": {
-				Type: schema.TypeList,
+				Type:     schema.TypeList,
+				Optional: true,
+				Computed: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"name": {
